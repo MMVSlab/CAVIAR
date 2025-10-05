@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Distance_extractor_cpptraj.py
+CAVIAR_Distance_Extractor.py
 
-Estrae distanze Cα–Cα da una traiettoria MD usando **cpptraj** (AmberTools),
-senza dipendenze Python (pytraj/mdtraj). È memory‑friendly (streaming).
+Extracts Cα–Cα distances from an MD trajectory using **cpptraj** (AmberTools),
+with no Python deps (pytraj/mdtraj). It’s memory-friendly (streaming).
 
-Formato coppie accettato (anche mischiati nello stesso file):
+Accepted pair formats (you can mix them in the same file):
   - "ASP25-GLU216"
-  - "dist 2: ALA15-GLY26" (lo script ignora il prefisso "dist 2:")
-  - "ALA15 - GLY26" (spazi consentiti)
+  - "dist 2: ALA15-GLY26" (the script ignores the "dist 2:" prefix)
+  - "ALA15 - GLY26" (spaces allowed)
 
-Numerazione:
-  - sequential  : usa l'indice sequenziale Amber (1..N). Se usi etichette in stile CAVIAR,
-                  imposta --offset così che label = seq + offset. Esempio: se CAVIAR etichetta
-                  ASP25 ma il residuo reale in Amber è 4, allora offset=21 (25=4+21).
-  - resSeq      : usa i numeri residuo PDB (richiede topologia PDB coerente). Usa selettori
-                  cpptraj "resid <N>@CA".
+Numbering:
+  - sequential  : uses Amber’s sequential residue index (1..N). If you use CAVIAR-style
+                  labels, set --offset so that label = seq + offset. Example: if CAVIAR
+                  labels ASP25 but the actual residue in Amber is 4, then offset=21
+                  (25 = 4 + 21).
+  - resSeq      : uses PDB residue numbers (requires a consistent PDB topology).
+                  Uses cpptraj selectors like "resid <N>@CA".
 
 Output:
-  CSV con prima colonna di tempo/frame (da cpptraj) e una colonna per coppia.
+  CSV with the first column as time/frame (from cpptraj) and one column per pair.
 
-Esempio:
+Example:
   python Distance_extractor_cpptraj.py \
       --top WT_GTP.parm7 --traj WT_GTP.nc \
       --pairs "ASP25-GLU216,ALA15-GLY26" \
@@ -73,7 +74,7 @@ def read_pairs(pairs: str, pairs_file: str) -> List[Tuple[str, int, str, int]]:
         with open(pairs_file, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 items.extend(_parse_pair_token(line))
-    # dedup preservando ordine
+    # dedup preserving order
     seen = set()
     uniq: List[Tuple[str, int, str, int]] = []
     for p in items:
@@ -84,7 +85,7 @@ def read_pairs(pairs: str, pairs_file: str) -> List[Tuple[str, int, str, int]]:
         sys.exit("Nessuna coppia valida trovata (es. ASP25-GLU216).")
     return uniq
 
-# ----------------------------- utilità varie ------------------------------------
+# ----------------------------- utilities ------------------------------------
 
 def which(prog: str) -> str:
     path = shutil.which(prog)
@@ -110,14 +111,14 @@ def main():
 
     pairs = read_pairs(args.pairs or '', args.pairs_file or '')
 
-    # Prepara selettori e nomi colonne
+    # selector and column name prep
     ds_names = []
     colnames = []
     cpptraj_cmds = []
 
-    # righe iniziali
+    # starting lines
     cpptraj_cmds.append(f'parm "{args.top}"')
-    # Compatibilità con cpptraj <= 6.x: niente keyword 'stride', usa l'argomento 'offset' (terzo numero)
+    # Compatibility with cpptraj <= 6.x no keyword 'stride', uses 'offset' (third number)
     if args.stride and args.stride != 1:
         cpptraj_cmds.append(f'trajin "{args.traj}" 1 last {args.stride}')
     else:
@@ -132,7 +133,7 @@ def main():
             selA = f":{a_idx}@CA"
             selB = f":{b_idx}@CA"
         else:  # resSeq
-            # Richiede top PDB con resSeq coerenti
+            # requires top PDB with resSeq consistentcoerenti
             selA = f"resid {a_lab}@CA"
             selB = f"resid {b_lab}@CA"
 
@@ -143,13 +144,13 @@ def main():
 
     cpptraj_cmds.append("run")
 
-    # csv temporaneo prodotto da cpptraj (header: Time,d0001,d0002,...)
+    # temp csv from cpptraj (header: Time,d0001,d0002,...)
     tmp_csv = "cpptraj_tmp_dist.csv"
-    # scriviamo tutte le serie in un unico file
+    # write all series in a unique file
     joined_ds = " ".join(ds_names)
     cpptraj_cmds.append(f"writedata \"{tmp_csv}\" {joined_ds} delim comma")
 
-    # eseguiamo cpptraj
+    # execute cpptraj
     with tempfile.NamedTemporaryFile('w', delete=False, prefix='cpptraj_input_', suffix='.in') as tf:
         tf.write("\n".join(cpptraj_cmds) + "\n")
         tmp_in = tf.name
@@ -163,17 +164,17 @@ def main():
         if not os.path.exists(tmp_csv):
             sys.exit("[ERR] cpptraj non ha prodotto il CSV atteso.")
 
-        # Rinomina intestazioni d**** con nomi umani e salva il CSV finale
+        # rename headers d**** with human readable names and save final csv.
         with open(tmp_csv, 'r', newline='') as fin:
             rows = list(csv.reader(fin))
         if not rows:
             sys.exit("[ERR] CSV vuoto.")
 
         header = rows[0]
-        # Mantieni la prima colonna (Time/Frame), rimpiazza le successive
+        # Keep the first column (Time/Frame), replace the others.
         expected = 1 + len(colnames)
         if len(header) != expected:
-            # cpptraj in alcune versioni può includere anche Step; prendiamo le ultime N colonne come serie
+            #In some cpptraj versions a ‘Step’ column is present; we’ll treat the last N columns as the series.
             base_cols = len(header) - len(colnames)
             if base_cols < 1:
                 sys.exit(f"[ERR] Intestazione inattesa dal CSV di cpptraj: {header}")
@@ -186,7 +187,7 @@ def main():
             w = csv.writer(fout)
             w.writerows(rows)
 
-        # pulizia
+        # housekeepping
         os.remove(tmp_csv)
         print(f"[DONE] Salvato CSV: {args.out}")
         print(f"[INFO] Colonne: {', '.join(colnames)}")
