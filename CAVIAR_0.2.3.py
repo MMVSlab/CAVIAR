@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CAVIAR 0.2.1 — (no-weights) pooled PCA → pooled tICA (PyEMMA)
+CAVIAR 0.2.3 — (no-weights) pooled PCA → pooled tICA (PyEMMA)
 → heatmap TIC1/TIC2 + CSV
 → CV selection (cluster-aware: TIC1 top, TIC1 second, TIC2 top)
 → stability report (split-half cos² + component-wise cosine)
-(NESSUNA FEL)
-
-Nota: rispetto a 0.2.1 precedente, questo ripristina heatmap e cluster-aware CV selection
-e corregge il NameError spostando tica_model dentro run().
 """
 
 import os, re, json, argparse, logging
@@ -45,9 +41,9 @@ DEFAULTS = dict(
     target_total_frames=14000,
     chunk_size=8000,
     n_jobs=None,
-    select_mode='TIC12',        # 'TIC12' (TIC1 + TIC2) oppure 'TIC1x2' (due da TIC1)
-    enforce_diversity=True,     # vincolo di diversità per cluster
-    cluster_cut_A=8.0,          # soglia [Å] per definire cluster residue su medie CA–CA
+    select_mode='TIC12',        # 'TIC12' (TIC1 + TIC2) or 'TIC1x2' (two from TIC1)
+    enforce_diversity=True,     # diversity constraint for clusters
+    cluster_cut_A=8.0,          # threshold [Å] to define residue clusters based on average Cα–Cα distances
     split_report_components=200,
     pca_randomized=False
 )
@@ -206,7 +202,7 @@ def run(cfg, dirA, dirB):
     run_dir = setup_run_dir(); setup_logging(run_dir)
     logging.info(f"Run dir: {run_dir}")
 
-    # ---- Load (tail-aligned) per sistema ----
+    # ---- Load (tail-aligned) per system. ----
     
     def load_system(basedir, tag, stride):
         traj_path = os.path.join(basedir, cfg['traj_name'])
@@ -241,7 +237,7 @@ def run(cfg, dirA, dirB):
 
 
     
-    # ---- Stride pre-load (stima da log) per arrivare ~ target_total_frames (A+B) ----
+    # ---- Pre-load stride (estimated from the log) to reach ~target_total_frames (A+B) ----
     nA_full = count_non_comment_lines(os.path.join(dirA, cfg['log_name']))
     nB_full = count_non_comment_lines(os.path.join(dirB, cfg['log_name']))
     tot_full = nA_full + nB_full
@@ -267,14 +263,14 @@ def run(cfg, dirA, dirB):
     pairs = [(i, j) for i in range(n_res) for j in range(i+cfg['min_seq_separation'], n_res)]
     logging.info(f"coppie candidate: {len(pairs)}")
 
-    # ---- Distanze pooled ----
+    # ---- pooled Distances ----
     XA = trajA.atom_slice(caA).xyz
     XB = trajB.atom_slice(caB).xyz
     distA = compute_distances_parallel(XA, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
     distB = compute_distances_parallel(XB, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
     logging.info(f"distA shape = {distA.shape} | distB shape = {distB.shape}")
 
-    # ---- PCA non pesata + preselezione (solo dedup strutturale) ----
+    # ---- PCA + preselection (structural dedup only) ----
     mu_pool = (distA.mean(axis=0) + distB.mean(axis=0)) / 2.0
     X = np.vstack([distA - mu_pool, distB - mu_pool]).astype(np.float32, copy=False)
 
@@ -305,7 +301,7 @@ def run(cfg, dirA, dirB):
     sel_pairs = [pairs[i] for i in final_idx]
     logging.info(f"[PCA preselezione] candidati={len(candidates)} → unici dopo dedup={len(final_idx)}")
 
-    # ---- tICA con PyEMMA (DENTRO run, FIX) ----
+    # ---- tICA with PyEMMA ----
     distA_sel = distA[:, final_idx]
     distB_sel = distB[:, final_idx]
     mu_pool_sel = (distA_sel.mean(axis=0) + distB_sel.mean(axis=0)) / 2.0
