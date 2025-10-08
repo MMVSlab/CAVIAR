@@ -4,6 +4,78 @@ CAVIAR is a Python script that identifies, from molecular dynamics trajectories 
 The selected distances are ranked and proposed as collective variables (CVs) for constructing free-energy landscapes—i.e., potential of mean force (PMF) maps.
 Originally designed to find the CVs that represent two systems in order to generate FELs that allows the comparison between two different state of a protein (WTvsMUTANT, GDP- vs GDP-bound, Liganded protein vs apo form etc.), it can be used to analyze the one system too. 
 
+## Pubblicazione su GitHub
+
+Per condividere le modifiche locali (incluse quelle introdotte da `CAVIAR_0.2.3.py` quando `--dirB` è omesso) su un repository GitHub, procedere così:
+
+1. **Verificare le modifiche locali**
+   ```bash
+   git status
+   ```
+   Se il file modificato (`CAVIAR_0.2.3.py`) risulta "modified", procedere con lo staging.
+
+2. **Aggiungere i file al commit**
+   ```bash
+   git add CAVIAR_0.2.3.py
+   ```
+   È possibile usare `git add .` per includere tutte le modifiche desiderate.
+
+3. **Creare il commit locale**
+   ```bash
+   git commit -m "Descrivere in breve la modifica"
+   ```
+   Confermare il commit con `git log --oneline` per assicurarsi che sia presente nella cronologia.
+
+4. **Configurare (o aggiornare) il repository remoto**
+   - Se non esiste un remoto: `git remote add origin https://github.com/<utente>/<repo>.git`
+   - Per modificare l'URL di un remoto esistente: `git remote set-url origin https://github.com/<utente>/<repo>.git`
+   Verificare il risultato con `git remote -v`.
+
+5. **Pubblicare il branch corrente su GitHub**
+   ```bash
+   git push -u origin <nome-branch>
+   ```
+   Sostituire `<nome-branch>` con il branch attivo (`main`, `master`, o un branch dedicato). L'opzione `-u` memorizza l'associazione per i push futuri.
+
+6. **Controllare su GitHub**
+   Visitare il repository su github.com per verificare che `CAVIAR_0.2.3.py` sia aggiornato. Da lì si può aprire una Pull Request se necessario.
+
+Ricordarsi di utilizzare un [token personale](https://docs.github.com/it/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token) se l'autenticazione tramite password non è disponibile (ad esempio da riga di comando su HTTPS).
+
+## Applicare una patch con `git apply`
+
+Se qualcuno ti fornisce un *diff* (ad esempio in formato `.patch` o `.diff`) puoi applicarlo direttamente al repository locale con `git apply`. Non è necessario creare file speciali oltre alla patch stessa. Il flusso tipico è il seguente:
+
+1. **Salvare la patch su disco**
+   - Se il diff è stato condiviso come testo, copialo in un file, ad esempio `modifiche.patch`, usando un editor di testo o un redirect da shell:
+     ```bash
+     cat > modifiche.patch <<'EOF'
+     # incolla qui il contenuto della patch
+     EOF
+     ```
+   - In alternativa, scarica direttamente il file `.patch` se è stato allegato da GitHub o inviato via email.
+
+2. **Verificare cosa farà la patch** (opzionale ma consigliato)
+   ```bash
+   git apply --stat modifiche.patch
+   git apply --check modifiche.patch
+   ```
+   `--stat` mostra un riepilogo delle modifiche, mentre `--check` conferma che la patch può essere applicata senza conflitti.
+
+3. **Applicare la patch**
+   ```bash
+   git apply modifiche.patch
+   ```
+   Dopo il comando, i file risultano modificati nella working tree (non ancora committati).
+
+4. **Verificare e proseguire normalmente**
+   ```bash
+   git status
+   ```
+   A questo punto puoi ispezionare i file, eseguire test e creare un commit con `git add` + `git commit`.
+
+Se la patch non si applica perché il tuo branch è troppo diverso, sincronizza prima il repository (`git pull` o `git fetch` + `git merge/rebase`) o chiedi una patch aggiornata. Per annullare un'applicazione non voluta, usa `git reset --hard` (attenzione: elimina le modifiche locali non committate).
+
 Pipeline structure
 1) trajectory representation. Measurement of the distance between each C-alpha of the protein with all the other C-alpha with a default sequence separation >5 residues (MDTraj)
 
