@@ -133,7 +133,10 @@ def make_heatmap(tag, tic_vec, sel_pairs, res1_labels, cfg, out_dir):
         im = plt.imshow(mat, aspect='equal'); plt.colorbar(im, label="Importance (|loading|)")
         plt.xticks(range(len(residues_sorted)), residues_sorted, rotation=90)
         plt.yticks(range(len(residues_sorted)), residues_sorted)
-    plt.title(f"Pooled tICA {tag} — {cfg['systemA']}+{cfg['systemB']}")
+    system_label = cfg.get('system_label')
+    if not system_label:
+        system_label = "+".join([cfg['systemA'], cfg['systemB']])
+    plt.title(f"Pooled tICA {tag} — {system_label}")
     plt.xlabel("Residue"); plt.ylabel("Residue")
     plt.tight_layout()
     out = os.path.join(out_dir, f"pooled_heatmap_{tag}.png")
@@ -198,7 +201,7 @@ def _split_half_cosines(Y, ncomp=10):
     return mean_cos2, comp_cos
 
 # ================= CORE =================
-def run(cfg, dirA, dirB):
+def run(cfg, dirA, dirB=None):
     run_dir = setup_run_dir(); setup_logging(run_dir)
     logging.info(f"Run dir: {run_dir}")
 
@@ -239,24 +242,31 @@ def run(cfg, dirA, dirB):
     
     # ---- Pre-load stride (estimated from the log) to reach ~target_total_frames (A+B) ----
     nA_full = count_non_comment_lines(os.path.join(dirA, cfg['log_name']))
-    nB_full = count_non_comment_lines(os.path.join(dirB, cfg['log_name']))
+    nB_full = 0
+    have_B = dirB is not None
+    if have_B:
+        nB_full = count_non_comment_lines(os.path.join(dirB, cfg['log_name']))
     tot_full = nA_full + nB_full
     target_tot = max(1, int(cfg['target_total_frames']))
     stride = 1 if tot_full <= target_tot else int(np.ceil(tot_full / target_tot))
     logging.info(f"Stride scelto (pre-load) = {stride}")
 
+    if not have_B:
+        logging.info("Modalità singolo sistema attivata (dirB non fornita)")
+
     A = load_system(dirA, cfg['systemA'], stride)
-    B = load_system(dirB, cfg['systemB'], stride)
+    B = load_system(dirB, cfg['systemB'], stride) if have_B else None
 
     trajA = A['traj_full']
-    trajB = B['traj_full']
+    trajB = B['traj_full'] if have_B else None
 
 
     # ---- CA atoms & pair list ----
     caA = trajA.topology.select('name CA')
-    caB = trajB.topology.select('name CA')
-    if len(caA) != len(caB):
-        raise ValueError("Mismatch numero di Cα tra A e B")
+    if have_B:
+        caB = trajB.topology.select('name CA')
+        if len(caA) != len(caB):
+            raise ValueError("Mismatch numero di Cα tra A e B")
     n_res = len(caA)
     res1A, res3A = residue_labels(trajA.topology, caA, cfg['residue_label_offset'])
 
@@ -265,14 +275,19 @@ def run(cfg, dirA, dirB):
 
     # ---- pooled Distances ----
     XA = trajA.atom_slice(caA).xyz
-    XB = trajB.atom_slice(caB).xyz
-    distA = compute_distances_parallel(XA, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
-    distB = compute_distances_parallel(XB, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
-    logging.info(f"distA shape = {distA.shape} | distB shape = {distB.shape}")
+    dist_mats = [compute_distances_parallel(XA, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])]
+    system_tags = [cfg['systemA']]
+    if have_B:
+        XB = trajB.atom_slice(caB).xyz
+        dist_mats.append(compute_distances_parallel(XB, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size']))
+        system_tags.append(cfg['systemB'])
+    for tag, mat in zip(system_tags, dist_mats):
+        logging.info(f"dist{tag} shape = {mat.shape}")
 
     # ---- PCA + preselection (structural dedup only) ----
-    mu_pool = (distA.mean(axis=0) + distB.mean(axis=0)) / 2.0
-    X = np.vstack([distA - mu_pool, distB - mu_pool]).astype(np.float32, copy=False)
+    system_means = [mat.mean(axis=0) for mat in dist_mats]
+    mu_pool = np.mean(system_means, axis=0)
+    X = np.vstack([mat - mu_pool for mat in dist_mats]).astype(np.float32, copy=False)
 
     if cfg['pca_randomized']:
         U, S, Vt = randomized_svd(X, n_components=min(cfg['n_pca_components'], X.shape[1]))
@@ -302,10 +317,9 @@ def run(cfg, dirA, dirB):
     logging.info(f"[PCA preselezione] candidati={len(candidates)} → unici dopo dedup={len(final_idx)}")
 
     # ---- tICA with PyEMMA ----
-    distA_sel = distA[:, final_idx]
-    distB_sel = distB[:, final_idx]
-    mu_pool_sel = (distA_sel.mean(axis=0) + distB_sel.mean(axis=0)) / 2.0
-    Xsel_pool = np.vstack([distA_sel - mu_pool_sel, distB_sel - mu_pool_sel])
+    dist_sel_list = [mat[:, final_idx] for mat in dist_mats]
+    mu_pool_sel = np.mean([mat.mean(axis=0) for mat in dist_sel_list], axis=0)
+    Xsel_pool = np.vstack([mat - mu_pool_sel for mat in dist_sel_list])
 
     if Xsel_pool.shape[0] <= cfg['lag_frames']:
         raise ValueError("lag troppo grande per i frame analisi pooled")
@@ -316,6 +330,7 @@ def run(cfg, dirA, dirB):
     np.save(os.path.join(run_dir, "tica_Y.npy"), Y)
 
     # ---- Heatmap & CSV (TIC1/TIC2) ----
+    cfg['system_label'] = "+".join(system_tags)
     tic1 = eigvecs[:, 0]
     heatmap1 = make_heatmap("TIC1", tic1, sel_pairs, res1A, cfg, run_dir)
     csv1 = os.path.join(run_dir, "pooled_distances_TIC1.csv"); save_tic_csv(csv1, sel_pairs, tic1, res3A)
@@ -327,7 +342,7 @@ def run(cfg, dirA, dirB):
         csv2 = os.path.join(run_dir, "pooled_distances_TIC2.csv"); save_tic_csv(csv2, sel_pairs, tic2, res3A)
 
     # ---- Cluster-aware CV selection ----
-    meanP_nm = 0.5*(distA.mean(axis=0) + distB.mean(axis=0))
+    meanP_nm = np.mean([mat.mean(axis=0) for mat in dist_mats], axis=0)
     pair_mean_nm = {pairs[k]: float(meanP_nm[k]) for k in range(len(pairs))}
     nm_cut = cfg['cluster_cut_A']/10.0
     comp = build_residue_components(n_res, pair_mean_nm, nm_cut)
@@ -372,7 +387,8 @@ def run(cfg, dirA, dirB):
 def parse_args():
     p = argparse.ArgumentParser(description="CAVIAR 0.2.1 — PCA → tICA (PyEMMA) → heatmap + CV selection (no FEL)")
     p.add_argument('--dirA', default=DEFAULTS['systemA'])
-    p.add_argument('--dirB', default=DEFAULTS['systemB'])
+    p.add_argument('--dirB', default=None,
+                   help="Directory del secondo sistema (opzionale; se assente usa solo dirA)")
     p.add_argument('--systemA', default=DEFAULTS['systemA'])
     p.add_argument('--systemB', default=DEFAULTS['systemB'])
     p.add_argument('--nuse', type=int, default=None)
