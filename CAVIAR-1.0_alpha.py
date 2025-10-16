@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CAVIAR 0.3.0 — (no-weights) pooled PCA → pooled tICA (PyEMMA)
+CAVIAR 1.0 alpha — (no-weights) pooled PCA → pooled tICA (PyEMMA)
 → heatmap TIC1/TIC2 + CSV
 → CV selection (cluster-aware: TIC1 top, TIC1 second, TIC2 top)
 → stability report (split-half cos² + component-wise cosine)
-(NESSUNA FEL)
-
-Nota: rispetto a 0.2.1 precedente, questo ripristina heatmap e cluster-aware CV selection
-e corregge il NameError spostando tica_model dentro run().
 """
 
 import os, re, json, argparse, logging
