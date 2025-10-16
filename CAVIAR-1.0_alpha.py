@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CAVIAR 1.0 alpha — (no-weights) pooled PCA → pooled tICA (PyEMMA)
+CAVIAR 1.0 alpha — pooled PCA → pooled tICA (PyEMMA)
 → heatmap TIC1/TIC2 + CSV
 → CV selection (cluster-aware: TIC1 top, TIC1 second, TIC2 top)
 → stability report (split-half cos² + component-wise cosine)
