@@ -44,12 +44,12 @@ DEFAULTS = dict(
     target_total_frames=14000,
     chunk_size=8000,
     n_jobs=None,
-    select_mode='TIC12',        # 'TIC12' (TIC1 + TIC2) oppure 'TIC1x2' (due da TIC1)
-    enforce_diversity=True,     # vincolo di diversità per cluster
-    cluster_cut_A=8.0,          # soglia [Å] per definire cluster residue su medie CA–CA
+    select_mode='TIC12',        # 'TIC12' (TIC1 + TIC2) or 'TIC1x2' (two distances from TIC1)
+    enforce_diversity=True,     # cluster-wise diversity constraint
+    cluster_cut_A=8.0,          # Distance cutoff (Å) to define residue clusters from average Cα–Cα separations
     split_report_components=200,
     pca_randomized=False,
-    vamp_multipliers='0.001,0.25,0.5,0.75,1,1.25,1.5,1.75,2',   # moltiplicatori della lag: es. "0.001, 0.25,0.5,0.75,1,1.25,1.5,1.75,2"
+    vamp_multipliers='0.001,0.25,0.5,0.75,1,1.25,1.5,1.75,2',   # lag multipliers (τ): 0.001, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2
 )
 
 AA1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLU':'E','GLN':'Q','GLY':'G',
@@ -267,14 +267,14 @@ def run(cfg, dirA, dirB):
     pairs = [(i, j) for i in range(n_res) for j in range(i+cfg['min_seq_separation'], n_res)]
     logging.info(f"Candidate residue pairs: {len(pairs)}")
 
-    # ---- Distanze pooled ----
+    # ---- Pooled Distances ----
     XA = trajA.atom_slice(caA).xyz
     XB = trajB.atom_slice(caB).xyz
     distA = compute_distances_parallel(XA, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
     distB = compute_distances_parallel(XB, pairs, n_jobs=cfg['n_jobs'], chunk_size=cfg['chunk_size'])
     logging.info(f"distA shape = {distA.shape} | distB shape = {distB.shape}")
 
-    # ---- PCA non pesata + preselezione (solo dedup strutturale) ----
+    # ---- PCA + prefilter (solo dedup strutturale) ----
     mu_pool = (distA.mean(axis=0) + distB.mean(axis=0)) / 2.0
     X = np.vstack([distA - mu_pool, distB - mu_pool]).astype(np.float32, copy=False)
 
@@ -306,20 +306,21 @@ def run(cfg, dirA, dirB):
     logging.info(f"[PCA preselezione] candidati={len(candidates)} → unici dopo dedup={len(final_idx)}")
 
 
-    # ---- tICA con PyEMMA (DENTRO run, FIX 0.3.0) ----
-    # Modifica 0.3.0: tICA su input pooled come lista [A, B] (no concatenazione)
-    # e selezione della lag via VAMP-2 cross-validated (even/odd folds) intorno a cfg['lag_frames'].
+# ---- tICA with PyEMMA (INSIDE run, FIX 0.3.0) ----
+# Change 0.3.0: run tICA on pooled input as a list [A, B] (no concatenation).
+# Select the lag via VAMP-2 cross-validation (even/odd folds) around cfg['lag_frames'].
+
     distA_sel = distA[:, final_idx]
     distB_sel = distB[:, final_idx]
     mu_pool_sel = (distA_sel.mean(axis=0) + distB_sel.mean(axis=0)) / 2.0
     XA = distA_sel - mu_pool_sel
     XB = distB_sel - mu_pool_sel
 
-    # --- helper VAMP-2 CV (locale a run) ---
+    # --- VAMP-2 cross-validation helper (run-local) ------
     def _vamp2_cv_score(X_list, tau, k=None, eps=1e-10):
         """Cross-validated VAMP-2 (even/odd) su lista di matrici (frames x features).
         Restituisce lo score medio fra i due fold. Se tau è troppo grande ritorna -inf."""
-        # Costruisci coppie (x_t, x_{t+tau}) per ogni traiettoria senza attraversare confini
+        # Build (x_t, x_{t+τ}) pairs for each trajectory without crossing boundaries
         pairs = []
         for X in X_list:
             T = X.shape[0]
@@ -374,11 +375,11 @@ def run(cfg, dirA, dirB):
     if min_len <= 1:
         raise ValueError("numero di frame insufficiente per tICA/VAMP-2")
 
-    # Griglia di lag attorno a quella richiesta: [tau/2, tau, 2*tau] (clippata)
+    # Lag grid around the requested value: [τ/2, τ, 2τ] (clipped)
     tau0 = int(cfg['lag_frames'])
     max_tau = max(1, min_len // 2)
 
-    # Parsing robusto dei moltiplicatori (es. "0.5,0.75;1;1.5,2")
+    # Robust parsing of lag multipliers (e.g., "0.5,0.75;1;1.5,2")
     def _parse_multipliers_str(s):
         toks = re.split(r'[,\s;]+', str(s).strip())
         vals = []
@@ -393,26 +394,26 @@ def run(cfg, dirA, dirB):
 
     mults = _parse_multipliers_str(cfg.get('vamp_multipliers', '0.5,1,2'))
 
-    # Costruisci la griglia di lag (clippata e deduplicata)
+    # Build the lag grid (clipped and deduplicated)
     taus = {int(max(1, min(max_tau, round(tau0 * m)))) for m in mults}
-    # assicurati che la lag di riferimento sia inclusa
+    # Ensure the reference lag is included
     taus.add(min(max_tau, max(1, tau0)))
     tau_grid = sorted(taus)
 
 
-    # k opzionale per lo score (limita le singolari considerate) — per default usa tutte
+    # k (optional): limit the number of singular values used in the score; by default use all
     k_vamp = None
 
-    # Calcola score VAMP-2 e seleziona la lag migliore
+    # Compute the VAMP-2 score and select the best lag
     X_list = [XA, XB]
     vamp_scores = {int(t): _vamp2_cv_score(X_list, int(t), k=k_vamp) for t in tau_grid}
     best_tau = int(max(vamp_scores, key=vamp_scores.get))
 
-    # Salva report
+    # Save report
     with open(os.path.join(run_dir, "vamp2_lag_scan.json"), "w") as fh:
         json.dump({"tau_grid": tau_grid, "scores": vamp_scores, "best_tau": best_tau}, fh, indent=2)
 
-    # tICA finale con input separati (no concatenazione) e lag da VAMP-2
+    # Fila tICA sith separated input (no concatenation) and lag from VAMP-2
     if min_len <= best_tau:
         raise ValueError("lag selezionata da VAMP-2 troppo grande per i frame disponibili")
     tica_model = pyemma.coordinates.tica([XA, XB], lag=best_tau, var_cutoff=1.0)
