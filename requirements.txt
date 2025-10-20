@@ -1,0 +1,9 @@
+# Pin compatibile con CAVIAR_1.0a.py evitando rogne con NumPy 2.x
+numpy==1.26.4
+scipy==1.11.4
+scikit-learn==1.4.2
+matplotlib==3.8.4
+seaborn==0.13.2
+mdtraj==1.9.9
+pyemma==2.5.12
+joblib==1.3.2
