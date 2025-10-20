@@ -465,7 +465,7 @@ def run(cfg, dirA, dirB):
     with open(stab_path, "w", encoding="utf-8") as fh:
         frames_pooled = int(XA.shape[0] + XB.shape[0])
         fh.write(f"Frames pooled: {frames_pooled}, Features selected: {len(final_idx)}\n")
-        fh.write(f"Lag (VAMP-2 selection): {best_tau}\n")
+        fh.write(f"Lag: {cfg['lag_frames']}\n")
         fh.write("Eigenvalues (first 8): " + ", ".join(f"{v:.6f}" for v in eigvals[:8]) + " ")
         try:
             mean_cos2, comp_cos = _split_half_cosines(Y, ncomp=min(cfg['split_report_components'], Y.shape[1]))
@@ -628,7 +628,7 @@ def run_single(cfg, dirA):
     stab_path = os.path.join(run_dir, "stability_tica.txt")
     with open(stab_path, "w", encoding="utf-8") as fh:
         fh.write(f"Frames: {Xsel.shape[0]}, Features selected: {len(final_idx)}\n")
-        fh.write(f"Lag (VAMP-2): {best_tau}\n")
+        fh.write(f"Lag: {cfg['lag_frames']}\n")
         fh.write("Eigenvalues (first 8): " + ", ".join(f"{v:.6f}" for v in eigvals[:8]) + "")
         # Keep the exact headings from 0.3.1 example
         fh.write(f"Split-half mean cos^2 principal angles: {mean_cos2:.6f}\n")
@@ -640,9 +640,10 @@ def run_single(cfg, dirA):
 def parse_args():
     p = argparse.ArgumentParser(description="CAVIAR 1.0a — PCA → tICA → CV selection (pooled or single-system)")
     p.add_argument('--dirA', default=DEFAULTS['systemA'])
-    p.add_argument('--dirB', default=DEFAULTS['systemB'])
+    # In single-system mode, omit both --systemB and --dirB (defaults None)
+    p.add_argument('--dirB', default=None)
     p.add_argument('--systemA', default=DEFAULTS['systemA'])
-    p.add_argument('--systemB', default=DEFAULTS['systemB'])
+    p.add_argument('--systemB', default=None)
     p.add_argument('--nuse', type=int, default=None)
     p.add_argument('--total-frames', type=int, default=DEFAULTS['target_total_frames'])
     p.add_argument('--tempK', type=float, default=DEFAULTS['temperature_K'])
@@ -675,7 +676,19 @@ def main():
     if args.cluster_cut is not None: cfg['cluster_cut_A'] = args.cluster_cut
     if args.split_report_components is not None: cfg['split_report_components'] = args.split_report_components
     if args.pca_randomized:    cfg['pca_randomized'] = True
-    ( run_single(cfg, args.dirA) if (args.systemB is None or str(args.systemB).strip()=="") else run(cfg, args.dirA, args.dirB) )
+    # Decide the mode:
+    sysB = (None if args.systemB is None else str(args.systemB).strip())
+    dirB = (None if args.dirB is None else str(args.dirB).strip())
 
+    single_mode = (not sysB) and (not dirB)
+
+    if single_mode:
+        # single-system mode
+        run_single(cfg, args.dirA)
+    else:
+        # pooled mode: require BOTH systemB and dirB
+        if not sysB or not dirB:
+            raise SystemExit("Pooled mode richiesto: specifica sia --systemB sia --dirB (oppure omettili entrambi per la single-system mode).")
+        run(cfg, args.dirA, dirB)
 if __name__ == "__main__":
     main()
