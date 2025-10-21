@@ -173,5 +173,5 @@ CAVIAR creates a new folder under `runs/` named with a timestamp, e.g., `runs/20
 
 ## 8) License & Citation
 
-- **License:** TBD (project‑specific).
-- **Please cite:** CAVIAR 1.0 alpha — PCA→tICA distance‑based CV discovery with split‑half stability & VAMP‑2 lag selection.
+- **License:** Apache 2.0
+- **Please cite:** CAVIAR_1.0alpha "Collective vAriable bIas-free Automated Ranking"
