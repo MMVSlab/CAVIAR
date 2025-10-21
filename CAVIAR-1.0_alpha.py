@@ -602,26 +602,11 @@ def run_single(cfg, dirA):
         ev1, eV1, _ = tica_fn(Xh1, cfg['lag_frames'], reg=cfg['regularization']) if 'reg' in tica_fn.__code__.co_varnames else tica_fn(Xh1, cfg['lag_frames'])
         ev2, eV2, _ = tica_fn(Xh2, cfg['lag_frames'], reg=cfg['regularization']) if 'reg' in tica_fn.__code__.co_varnames else tica_fn(Xh2, cfg['lag_frames'])
         # helper approximations (use same names if present)
-        def _principal_angles_cos2(U1, U2, k):
-            k = min(k, U1.shape[1], U2.shape[1])
-            if k == 0: return float('nan')
-            Qa, _ = np.linalg.qr(U1[:, :k]); Qb, _ = np.linalg.qr(U2[:, :k])
-            S = np.linalg.svd(Qa.T @ Qb, compute_uv=False)
-            return float(np.mean(S**2))
-        def _componentwise_cosine(U1, U2, m=200):
-            K = min(m, U1.shape[1], U2.shape[1]); res, used = [], set()
-            for i in range(K):
-                a = U1[:, i]; na = float(np.linalg.norm(a)) or 1.0; a = a/na
-                best, bj = -1.0, 0
-                for j in range(U2.shape[1]):
-                    if j in used: continue
-                    b = U2[:, j]; nb = float(np.linalg.norm(b)) or 1.0
-                    c = abs(float(np.dot(a, b)/nb))
-                    if c > best: best, bj = c, j
-                used.add(bj); res.append(best)
-            return res
-        mean_cos2 = _principal_angles_cos2(eigvecs, eigvecs, k=1)  # trivial (keep format); original likely used subspaces from halves
-        comp_cos = _componentwise_cosine(eigvecs, eigvecs, m=min(200, eigvecs.shape[1]))
+        # usa la stessa metrica del ramo pooled: split even/odd sulle proiezioni Y
+        mean_cos2, comp_cos = _split_half_cosines(
+            Y, ncomp=min(cfg['split_report_components'], Y.shape[1])
+        )
+
     except Exception as e:
         mean_cos2 = float('nan'); comp_cos = []
 
