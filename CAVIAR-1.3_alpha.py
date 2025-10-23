@@ -757,7 +757,7 @@ def parse_args():
     p.add_argument('--minsep', type=int, default=DEFAULTS['min_seq_separation'])
     p.add_argument('--npc', type=int, default=DEFAULTS['n_pca_components'])
     p.add_argument('--topk_tica', type=int, default=DEFAULTS['top_k_tica'])
-    p.add_argument('--jobs', type=int, default=-1)
+    p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--select-mode', choices=['TIC12','TIC1x2'], default=DEFAULTS['select_mode'])
     p.add_argument('--no-diversity', action='store_true')
     p.add_argument('--cluster-cut', type=float, default=DEFAULTS['cluster_cut_A'])
