@@ -166,15 +166,25 @@ def main():
 
         # rename headers d**** with human readable names and save final csv.
         with open(tmp_csv, 'r', newline='') as fin:
-            rows = list(csv.reader(fin))
+            raw = fin.read()
+
+        # Auto-detect delimiter: if no comma in header, treat as whitespace-delimited
+        first_line = raw.splitlines()[0] if raw else ""
+        if ',' in first_line:
+            rows = list(csv.reader(raw.splitlines()))
+        else:
+            def _ws_split(line: str):
+                return [tok for tok in line.strip().split()] if line.strip() else []
+            rows = [_ws_split(line) for line in raw.splitlines()]
+
         if not rows:
             sys.exit("[ERR] CSV vuoto.")
 
         header = rows[0]
-        # Keep the first column (Time/Frame), replace the others.
         expected = 1 + len(colnames)
         if len(header) != expected:
-            #In some cpptraj versions a ‘Step’ column is present; we’ll treat the last N columns as the series.
+            # Alcune versioni aggiungono colonne base (es. '#Frame' o 'Step'); 
+            # in ogni caso prendiamo le ultime N colonne come le serie di distanze.
             base_cols = len(header) - len(colnames)
             if base_cols < 1:
                 sys.exit(f"[ERR] Intestazione inattesa dal CSV di cpptraj: {header}")
@@ -186,6 +196,7 @@ def main():
         with open(args.out, 'w', newline='') as fout:
             w = csv.writer(fout)
             w.writerows(rows)
+
 
         # housekeepping
         os.remove(tmp_csv)
