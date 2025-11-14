@@ -65,6 +65,10 @@ DEFAULTS = dict(
     pca_iter=7,
     pca_seed=42,
     vamp_multipliers='0.001,0.25,0.5,0.75,1,1.25,1.5,1.75,2',
+    functional_rank=False,
+    rank_topN=50,
+    rank_weights='0.5,0.3,0.2,0.5',
+    rank_out_prefix='functional_rank',
 )
 
 AA1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLU':'E','GLN':'Q','GLY':'G',
@@ -317,6 +321,8 @@ def run_pooled(cfg, dirA, dirB):
     # ---- Cα selection and residue pairs ----
     caA = trajA.topology.select('name CA')
     caB = trajB.topology.select('name CA')
+    caA = _trim_ca_indices(caA, cfg.get('trimN', 0), cfg.get('trimC', 0))
+    caB = _trim_ca_indices(caB, cfg.get('trimN', 0), cfg.get('trimC', 0))
     if len(caA) != len(caB):
         raise ValueError("Different number of Cα atoms between A and B")
     n_res = len(caA)
@@ -515,6 +521,94 @@ def run_pooled(cfg, dirA, dirB):
     with open(os.path.join(run_dir, "cv_selected.json"), "w") as fh:
         json.dump(cv_meta, fh, indent=2)
 
+    # ---- Functional ranking (optional; zero side-effects on core outputs) ----
+    if cfg.get('functional_rank', False):
+        logging.info("[FUNC-RANK] Computing functional ranking (tICA |w|, Cohen's d, AUROC, stability CV, cluster-aware greedy)")
+        # 1) tICA |w| (use TIC1 loadings at best_tau)
+        try:
+            w_mean = np.abs(tic1).astype(float)
+        except Exception:
+            w_mean = np.zeros(len(sel_pairs), dtype=float)
+        w_cv = np.zeros_like(w_mean)  # placeholder (no re-fit across taus; keep 0 penalty)
+
+        # 2) Separability A vs B on selected features
+        XA_loc = XA  # centered selected distances for A
+        XB_loc = XB  # centered selected distances for B
+        n_pairs = XA_loc.shape[1]
+
+        def _cohend(a, b):
+            a = a.astype(float); b = b.astype(float)
+            ma, mb = a.mean(), b.mean()
+            va = a.var(ddof=1) if a.size>1 else 0.0
+            vb = b.var(ddof=1) if b.size>1 else 0.0
+            sp = np.sqrt(((a.size-1)*va + (b.size-1)*vb) / max(a.size+b.size-2, 1))
+            return (ma-mb) / (sp + 1e-12)
+
+        def _auroc_1feat(a, b):
+            # Mann–Whitney U -> AUROC
+            x = np.concatenate([a, b])
+            # ranks of concatenated vector
+            ranks = x.argsort().argsort().astype(float) + 1.0
+            Ra = ranks[:a.size].sum()
+            U  = Ra - a.size*(a.size+1)/2.0
+            auc = U / (a.size * b.size + 1e-12)
+            return auc if auc>=0.5 else (1.0-auc)
+
+        d_abs   = np.empty(n_pairs, float)
+        auc_adj = np.empty(n_pairs, float)
+        for j in range(n_pairs):
+            a = XA_loc[:, j]; b = XB_loc[:, j]
+            d_abs[j]   = abs(_cohend(a, b))
+            auc_adj[j] = _auroc_1feat(a, b) - 0.5
+
+        def _zscore(v):
+            v = v.astype(float)
+            mu, sd = v.mean(), v.std()
+            return (v - mu) / (sd + 1e-12)
+
+        S_tica = _zscore(w_mean)
+        S_d    = _zscore(d_abs)
+        S_auc  = _zscore(auc_adj)
+        P_stab = _zscore(w_cv)
+
+        # weights
+        try:
+            alpha, beta, gamma, delta = [float(x) for x in str(cfg.get('rank_weights', '0.5,0.3,0.2,0.5')).split(",")]
+        except Exception:
+            alpha, beta, gamma, delta = 0.5, 0.3, 0.2, 0.5
+        S = alpha*S_tica + beta*S_d + gamma*S_auc - delta*P_stab
+
+        # cluster-aware greedy
+        order = np.argsort(-S)
+        pair_index = {tuple(p): idx for idx, p in enumerate(sel_pairs)}
+        chosen = []
+        topN = int(cfg.get('rank_topN', 50))
+        for j in order:
+            if len(chosen) >= topN:
+                break
+            pi = sel_pairs[j]
+            if (all(diverse_enough(prev, pi, comp, cfg) for prev in chosen)) if chosen else True:
+                chosen.append(pi)
+
+        out_csv  = os.path.join(run_dir, f"{cfg.get('rank_out_prefix', 'functional_rank')}.csv")
+        out_json = os.path.join(run_dir, f"{cfg.get('rank_out_prefix', 'functional_rank')}.json")
+        with open(out_csv, "w") as fh2:
+            fh2.write("rank,pair,res1,res2,S,S_tica,S_d,S_auc,P_stab,w_mean,d_abs,auc_adj\n")
+            rank = 1
+            for pi in chosen:
+                j = pair_index[tuple(pi)]
+                r1, r2 = res3A[pi[0]], res3A[pi[1]]
+                fh2.write(f"{rank},{r1}-{r2},{r1},{r2},{S[j]:.6g},{S_tica[j]:.6g},{S_d[j]:.6g},{S_auc[j]:.6g},{P_stab[j]:.6g},{w_mean[j]:.6g},{d_abs[j]:.6g},{auc_adj[j]:.6g}\n")
+                rank += 1
+        with open(out_json, "w") as fh3:
+            json.dump({
+                "weights": {"alpha":alpha,"beta":beta,"gamma":gamma,"delta":delta},
+                "topN": len(chosen),
+                "order_desc_all": np.argsort(-S).tolist(),
+                "chosen_pairs": [f"{res3A[p[0]]}-{res3A[p[1]]}" for p in chosen]
+            }, fh3, indent=2)
+        logging.info(f"[FUNC-RANK] Written {out_csv} and {out_json}")
+
     # ---- Stability report ----
     mean_cos2, comp_cos = _split_half_cosines(Y, ncomp=min(cfg['split_report_components'], Y.shape[1]))
     stab_path = os.path.join(run_dir, "stability_tica.txt")
@@ -566,6 +660,7 @@ def run_single(cfg, dirA):
 
     trajA = tail[::stride]
     caA = trajA.topology.select('name CA')
+    caA = _trim_ca_indices(caA, cfg.get('trimN', 0), cfg.get('trimC', 0))
     n_res = len(caA)
     res1A, res3A = residue_labels(trajA.topology, caA, cfg['residue_label_offset'])
 
@@ -755,10 +850,29 @@ def parse_args():
     p.add_argument('--tempK', type=float, default=DEFAULTS['temperature_K'])
     p.add_argument('--lag', type=int, default=DEFAULTS['lag_frames'])
     p.add_argument('--minsep', type=int, default=DEFAULTS['min_seq_separation'])
+    p.add_argument('--trimN', type=int, default=0, help='Numero di residui da escludere all’N-term.')
+    p.add_argument('--trimC', type=int, default=0, help='Numero di residui da escludere al C-term.')
     p.add_argument('--npc', type=int, default=DEFAULTS['n_pca_components'])
     p.add_argument('--topk_tica', type=int, default=DEFAULTS['top_k_tica'])
     p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--select-mode', choices=['TIC12','TIC1x2'], default=DEFAULTS['select_mode'])
+
+    p.add_argument('--functional-rank', action='store_true',
+                   help="Compute post-hoc functional ranking (Cohen's d, AUROC, tICA |w| stability). No changes to main outputs.")
+    p.add_argument('--rank-topN', type=int, default=DEFAULTS['rank_topN'],
+                   help="Top-N distances to export in functional_rank.csv/json (default: 50)")
+    p.add_argument('--rank-weights', type=str, default=DEFAULTS['rank_weights'],
+                   help='Weights "alpha,beta,gamma,delta" for S = alpha*Stica + beta*Sd + gamma*Sauc - delta*Pstab')
+    p.add_argument('--rank-out-prefix', type=str, default=DEFAULTS['rank_out_prefix'],
+                   help="Prefix for functional rank outputs (CSV/JSON)")
+#    p.add_argument('--functional-rank', action='store_true',
+#                   help="Compute post-hoc functional ranking of distances (Cohen's d, AUROC, tICA |w| stability) without changing the main pipeline")
+#    p.add_argument('--rank-topN', type=int, default=50,
+#                     help="Top-N distances to export in functional_rank.csv/json (default: 50)")
+#    p.add_argument('--rank-weights', type=str, default="0.5,0.3,0.2,0.5",
+#                     help='Weights "alpha,beta,gamma,delta" for S = alpha*Stica + beta*Sd + gamma*Sauc - delta*Pstab')
+#    p.add_argument('--rank-out-prefix', type=str, default='functional_rank',
+#                     help='Prefix for rank outputs (CSV/JSON)')
     p.add_argument('--no-diversity', action='store_true')
     p.add_argument('--cluster-cut', type=float, default=DEFAULTS['cluster_cut_A'])
     p.add_argument('--split-report-components', type=int, default=DEFAULTS['split_report_components'])
@@ -770,6 +884,14 @@ def parse_args():
     p.add_argument('--vamp-mults', default=None,
                    help="Multipliers around --lag, e.g. '0.5,1,2' or '0.75,1,1.25'")
     return p
+
+
+def _trim_ca_indices(ca_idx, trimN, trimC):
+    n = len(ca_idx)
+    tN = max(0, int(trimN)); tC = max(0, int(trimC))
+    if tN + tC >= n:
+        raise SystemExit(f"[ERR] trimN+trimC ({tN}+{tC}) >= n_res ({n})")
+    return ca_idx[tN: (None if tC == 0 else -tC)]
 
 
 def main():
@@ -790,6 +912,16 @@ def main():
     if args.pca_randomized:    cfg['pca_randomized'] = True
     if args.pca_iter is not None: cfg['pca_iter'] = int(args.pca_iter)
     if args.pca_seed is not None: cfg['pca_seed'] = int(args.pca_seed)
+
+    # Functional rank flags
+    cfg['functional_rank'] = bool(getattr(args, 'functional_rank', False))
+    cfg['rank_topN'] = int(getattr(args, 'rank_topN', DEFAULTS['rank_topN']))
+    cfg['rank_weights'] = str(getattr(args, 'rank_weights', DEFAULTS['rank_weights']))
+    cfg['rank_out_prefix'] = str(getattr(args, 'rank_out_prefix', DEFAULTS['rank_out_prefix']))
+
+    # Trimming flags
+    cfg['trimN'] = int(getattr(args, 'trimN', 0) or 0)
+    cfg['trimC'] = int(getattr(args, 'trimC', 0) or 0)
 
     # Decide mode
     sysB = (None if args.systemB is None else str(args.systemB).strip())
